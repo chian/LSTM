@@ -174,7 +174,7 @@ def all_loss_train(num_channels, hsize, layers, dropout, batch_size, LR, num_epo
         return all_test_loss
 
 # Plotting function used in lstm_main
-def plot_best_fit(true_data, prediction, model_pred_color, true_data_color, idx, labels, save, save_dir, full_test_data):
+def plot_best_fit(true_data, prediction, model_pred_color, true_data_color, idx, labels, save, save_dir, full_test_data, run_number=None):
     #idx is a list of the index of the species
     #idx of the prediction and labels should correspond
     #prediction should be the output of the testing scheme
@@ -182,6 +182,7 @@ def plot_best_fit(true_data, prediction, model_pred_color, true_data_color, idx,
     #true_data should be shape (timesteps, species)
     # assert len(model_pred_color) == len(true_data_color) == len(idx), 'Make sure the lists of colors and indexes are the same size'
     # assert len(true_data[0]) == len(labels), 'Make sure the size of the features and labels are the same shape'
+    plt.ion()
     plt.close()
     plt.rc('xtick', labelsize=15)
     plt.rc('ytick', labelsize=15)
@@ -190,7 +191,10 @@ def plot_best_fit(true_data, prediction, model_pred_color, true_data_color, idx,
     pred_labels = ' prediction'
     best_pred = torch.clone(prediction).detach()
     fig2, ax2 = plt.subplots()
-    title = 'LSTM Fits'
+    if run_number is not None:
+        title = f'LSTM Fits - Run {run_number}'
+    else:
+        title = 'LSTM Fits'
     ax2.set_title(title, fontsize=25)
     ylabel = 'Relative Abundance'
     ax2.set_ylabel(ylabel, fontsize=25)
@@ -206,4 +210,5 @@ def plot_best_fit(true_data, prediction, model_pred_color, true_data_color, idx,
     # plt.tight_layout()
     if (save_dir is not None) and save:
         plt.savefig('LSTMFit.png')
-    plt.show()
+    plt.show(block=False)
+    plt.pause(0.1)
