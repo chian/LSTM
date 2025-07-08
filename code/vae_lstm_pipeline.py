@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 import torch.nn as nn
+import os
+import multiprocessing as mp
 
 # === CONFIGURATION: Set all key hyperparameters here ===
 latent_dim = 8         # Bottleneck size for BetaVAE
@@ -16,6 +18,11 @@ anneal_epochs = 20     # KL annealing epochs
 lr = 1e-5              # Learning rate
 seq_len = 14           # LSTM input sequence length
 # =======================================================
+
+# === PARALLELIZATION CONFIGURATION ===
+NUM_GPUS = 8  # Number of GPUs available
+JOBS_PER_GPU = 4  # Number of parallel jobs per GPU
+# =====================================
 
 # 1. Utility functions to save/load BetaVAE weights
 
@@ -288,9 +295,17 @@ if __name__ == "__main__":
     num_epochs = 50
     anneal_epochs = 10
     input_dim = 15
-    results = []
-    for latent_dim, beta, hidden_dim, num_layers, lr, batch_size in product(latent_dims, betas, hidden_dims, num_layers_list, lrs, batch_sizes):
-        print(f"\n=== Running BetaVAE: latent_dim={latent_dim}, beta={beta}, hidden_dim={hidden_dim}, num_layers={num_layers}, lr={lr}, batch_size={batch_size} ===")
+    results = mp.Manager().list()
+
+    param_grid = list(product(latent_dims, betas, hidden_dims, num_layers_list, lrs, batch_sizes))
+    total_jobs = NUM_GPUS * JOBS_PER_GPU
+
+    def worker(args):
+        idx, params = args
+        gpu_id = idx % NUM_GPUS
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        latent_dim, beta, hidden_dim, num_layers, lr, batch_size = params
+        print(f"\n=== Running BetaVAE: latent_dim={latent_dim}, beta={beta}, hidden_dim={hidden_dim}, num_layers={num_layers}, lr={lr}, batch_size={batch_size} on GPU {gpu_id} ===")
         vae, tc_history, best_tc, best_epoch = run_beta_vae_experiment(
             latent_dim=latent_dim,
             beta=beta,
@@ -304,7 +319,7 @@ if __name__ == "__main__":
             save_path=None
         )
         print(f"Best TC for this run: {best_tc:.4f} at epoch {best_epoch}")
-        results.append({
+        result = {
             'latent_dim': latent_dim,
             'beta': beta,
             'hidden_dim': hidden_dim,
@@ -314,7 +329,14 @@ if __name__ == "__main__":
             'tc': best_tc,
             'best_epoch': best_epoch,
             'tc_history': tc_history
-        })
+        }
+        results.append(result)
+        return result
+
+    with mp.get_context("spawn").Pool(total_jobs) as pool:
+        all_args = list(enumerate(param_grid))
+        pool.map(worker, all_args)
+
     print("\nAll runs complete. Results (sorted by best TC):")
     for r in sorted(results, key=lambda x: x['tc']):
         print(r)
