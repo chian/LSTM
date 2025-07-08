@@ -21,7 +21,7 @@ seq_len = 14           # LSTM input sequence length
 
 # === PARALLELIZATION CONFIGURATION ===
 NUM_GPUS = 8  # Number of GPUs available
-JOBS_PER_GPU = 4  # Number of parallel jobs per GPU
+JOBS_PER_GPU = 6  # Number of parallel jobs per GPU (increased from 4)
 # =====================================
 
 # 1. Utility functions to save/load BetaVAE weights
@@ -254,7 +254,7 @@ def run_beta_vae_experiment(
     import torch
 
     # 1. Load all training and testing sequences
-    data_path = os.path.join('data', 'train_test_sequences.pickle')
+    data_path = os.path.join('..', 'data', 'train_test_sequences.pickle')
     with open(data_path, 'rb') as f:
         all_training_sequences, all_testing_sequences = pickle.load(f)
 
@@ -283,59 +283,56 @@ def run_beta_vae_experiment(
     # 8. Do not save trained model in evaluation mode
     return vae, tc_history, best_tc, best_epoch
 
+def worker(args):
+    idx, params = args
+    gpu_id = idx % NUM_GPUS
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    latent_dim, beta, hidden_dim, num_layers, lr, batch_size = params
+    print(f"\n=== Running BetaVAE: latent_dim={latent_dim}, beta={beta}, hidden_dim={hidden_dim}, num_layers={num_layers}, lr={lr}, batch_size={batch_size} on GPU {gpu_id} ===")
+    vae, tc_history, best_tc, best_epoch = run_beta_vae_experiment(
+        latent_dim=latent_dim,
+        beta=beta,
+        input_dim=15,  # Fixed input_dim
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        batch_size=batch_size,
+        num_epochs=100,  # Fixed num_epochs
+        anneal_epochs=20,  # Fixed anneal_epochs
+        lr=lr,
+        save_path=None
+    )
+    print(f"Best TC for this run: {best_tc:.4f} at epoch {best_epoch}")
+    result = {
+        'latent_dim': latent_dim,
+        'beta': beta,
+        'hidden_dim': hidden_dim,
+        'num_layers': num_layers,
+        'lr': lr,
+        'batch_size': batch_size,
+        'tc': best_tc,
+        'best_epoch': best_epoch,
+        'tc_history': tc_history
+    }
+    return result
+
 if __name__ == "__main__":
     from itertools import product
     # Define hyperparameter grid
-    latent_dims = [4, 5, 6, 7, 8, 9, 10, 11, 12]
+    latent_dims = [4, 6, 8, 10, 12]
     betas = [1.0, 4.0, 10.0]
     hidden_dims = [16, 32, 64]
-    num_layers_list = [1, 2, 3, 4]
+    num_layers_list = [1, 2, 3]
     lrs = [1e-4, 1e-5, 1e-6]
     batch_sizes = [32, 64]
-    num_epochs = 50
-    anneal_epochs = 10
-    input_dim = 15
     results = mp.Manager().list()
 
     param_grid = list(product(latent_dims, betas, hidden_dims, num_layers_list, lrs, batch_sizes))
     total_jobs = NUM_GPUS * JOBS_PER_GPU
 
-    def worker(args):
-        idx, params = args
-        gpu_id = idx % NUM_GPUS
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-        latent_dim, beta, hidden_dim, num_layers, lr, batch_size = params
-        print(f"\n=== Running BetaVAE: latent_dim={latent_dim}, beta={beta}, hidden_dim={hidden_dim}, num_layers={num_layers}, lr={lr}, batch_size={batch_size} on GPU {gpu_id} ===")
-        vae, tc_history, best_tc, best_epoch = run_beta_vae_experiment(
-            latent_dim=latent_dim,
-            beta=beta,
-            input_dim=input_dim,
-            hidden_dim=hidden_dim,
-            num_layers=num_layers,
-            batch_size=batch_size,
-            num_epochs=num_epochs,
-            anneal_epochs=anneal_epochs,
-            lr=lr,
-            save_path=None
-        )
-        print(f"Best TC for this run: {best_tc:.4f} at epoch {best_epoch}")
-        result = {
-            'latent_dim': latent_dim,
-            'beta': beta,
-            'hidden_dim': hidden_dim,
-            'num_layers': num_layers,
-            'lr': lr,
-            'batch_size': batch_size,
-            'tc': best_tc,
-            'best_epoch': best_epoch,
-            'tc_history': tc_history
-        }
-        results.append(result)
-        return result
-
     with mp.get_context("spawn").Pool(total_jobs) as pool:
         all_args = list(enumerate(param_grid))
-        pool.map(worker, all_args)
+        results_list = pool.map(worker, all_args)
+        results.extend(results_list)
 
     print("\nAll runs complete. Results (sorted by best TC):")
     for r in sorted(results, key=lambda x: x['tc']):

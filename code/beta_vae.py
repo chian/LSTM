@@ -192,10 +192,10 @@ def train_beta_vae(model, dataloader, optimizer, device, epochs=100, anneal_epoc
                 val_str = f" | ValLoss={val_loss.item():.2f} ValRecon={val_recon.item():.2f} ValKLD={val_kld.item():.2f}"
             print(f"Epoch {epoch+1}: Loss={total_loss:.2f} Recon={total_recon:.2f} KLD={total_kld:.2f} Beta={model.beta:.4f} TC={tc:.4f}{val_str}")
             # Show latent traversal plot for first validation sample
-            if val_tensor is not None:
-                sample = val_tensor[0].to(device)
-                print(f"Latent traversal plot for validation sample (epoch {epoch+1})")
-                latent_traversal_plot(model, sample, device)
+            # if val_tensor is not None:
+            #     sample = val_tensor[0].to(device)
+            #     print(f"Latent traversal plot for validation sample (epoch {epoch+1})")
+            #     latent_traversal_plot(model, sample, device)
             model.train()
         else:
             print(f"Epoch {epoch+1}: Loss={total_loss:.2f} Recon={total_recon:.2f} KLD={total_kld:.2f} Beta={model.beta:.4f}")
