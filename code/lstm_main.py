@@ -20,6 +20,9 @@ import shapley_attribution
 import seaborn as sns
 from shapley_attribution import compositional_mean_baseline, ablate_feature_compositional
 from matplotlib.backends.backend_pdf import PdfPages
+from joblib import Parallel, delayed
+from itertools import combinations
+import random
 
 # This is just the main script if you want to run the model one-off or something
 # 
@@ -102,27 +105,59 @@ for z in range(ensemble_size):
     # Baseline for timepoint attribution: compositional mean
     baseline = compositional_mean_baseline(tensor_true_test_in.cpu())
 
+    # Compute mean_vec once for the perturb function
+    mean_vec = compositional_mean_baseline(tensor_true_test_in.cpu())[0]
     # Perturb function for feature ablation: ablate each feature at all timepoints
-    def feature_ablation_perturb(input_seq, ablated_features):
-        # input_seq: (timesteps, features)
-        # ablated_features: tuple of feature indices to ablate
+    def feature_ablation_perturb(input_seq, ablated_features, mean_vec):
         ablated_seq = input_seq.clone()
-        # Use compositional mean as baseline for each feature
-        mean_vec = compositional_mean_baseline(input_seq)[0]
         for t in range(input_seq.shape[0]):
             for f in ablated_features:
                 ablated_seq[t] = ablate_feature_compositional(ablated_seq[t], f, mean_vec[f])
         return ablated_seq
 
+    def compute_shapley_for_species(target_idx):
+        perturbed_inputs_S = []
+        perturbed_inputs_Si = []
+        feature_indices = list(range(len(blastT_labels)))
+        for k in range(len(blastT_labels)):
+            for S in combinations([j for j in feature_indices if j != target_idx], k):
+                x_S = feature_ablation_perturb(tensor_true_test_in.cpu(), S, mean_vec)
+                x_Si = feature_ablation_perturb(tensor_true_test_in.cpu(), tuple(list(S)+[target_idx]), mean_vec)
+                perturbed_inputs_S.append(x_S)
+                perturbed_inputs_Si.append(x_Si)
+        batch_S = torch.stack(perturbed_inputs_S)
+        batch_Si = torch.stack(perturbed_inputs_Si)
+        with torch.no_grad():
+            # Set up hidden state for batch
+            n_layers = best_model.num_layers
+            batch_size = batch_S.size(0)
+            best_model.hidden = (
+                torch.zeros(n_layers, batch_size, best_model.hidden_layer_size).to(batch_S.device),
+                torch.zeros(n_layers, batch_size, best_model.hidden_layer_size).to(batch_S.device)
+            )
+            out_S = best_model(batch_S)
+            best_model.hidden = (
+                torch.zeros(n_layers, batch_size, best_model.hidden_layer_size).to(batch_Si.device),
+                torch.zeros(n_layers, batch_size, best_model.hidden_layer_size).to(batch_Si.device)
+            )
+            out_Si = best_model(batch_Si)
+        # Calculate Shapley values for this target_idx
+        shapley_values = (out_Si[:, target_idx] - out_S[:, target_idx]).cpu().numpy()
+        self_effect = np.mean(shapley_values)
+        neighbor_effects = {i: np.mean(shapley_values) for i in feature_indices if i != target_idx}
+        max_neighbor_effect = max(neighbor_effects.values()) if neighbor_effects else 0.0
+        return self_effect, neighbor_effects, max_neighbor_effect
+
+    results = Parallel(n_jobs=4)(
+        delayed(compute_shapley_for_species)(target_idx) for target_idx in range(len(blastT_labels))
+    )
+    # Initialize arrays before unpacking results
     shapley_matrix = np.zeros((len(blastT_labels), len(blastT_labels)))
     self_effects = np.zeros(len(blastT_labels))
     max_neighbor_effects = np.zeros(len(blastT_labels))
-    for target_idx, species_name in enumerate(blastT_labels):
-        self_effect, neighbor_effects, max_neighbor_effect = shapley_attribution.shapley_feature_attribution(
-            best_model, tensor_true_test_in.cpu(), baseline, target_idx=target_idx, device=device,
-            perturb_func=feature_ablation_perturb
-        )
-        print(f'--- Shapley attribution for {species_name} ---')
+    # Unpack results into the original arrays
+    for target_idx, (self_effect, neighbor_effects, max_neighbor_effect) in enumerate(results):
+        print(f'--- Shapley attribution for {blastT_labels[target_idx]} ---')
         print(f'Self-effect (own history): {self_effect:.4f}')
         print(f'Max neighbor effect: {max_neighbor_effect:.4f}')
         print('Neighbor effects:')
@@ -169,9 +204,56 @@ if ensemble_shapley_matrices:
     print('\nComputing approximate Shapley values for all (species, timepoint) pairs...')
     # Use the best model and first test input for demonstration
     # For timepoint ablation, baseline is compositional mean
-    shapley_matrix = shapley_attribution.shapley_species_timepoint_matrix(
-        best_model, tensor_true_test_in.cpu(), baseline, device=device, n_samples=100, seed=42
+    def compute_shapley_for_species_timepoint(f, t, n_samples=100, seed=42):
+        if seed is not None:
+            random.seed(seed + f * 1000 + t)
+            np.random.seed(seed + f * 1000 + t)
+        perturbed_inputs_S = []
+        perturbed_inputs_Si = []
+        timesteps, features = tensor_true_test_in.cpu().shape
+        variables = [(fi, ti) for fi in range(features) for ti in range(timesteps) if (fi, ti) != (f, t)]
+        for _ in range(n_samples):
+            k = np.random.randint(0, len(variables)+1)
+            S = set(random.sample(variables, k))
+            mask = torch.zeros((timesteps, features), dtype=torch.bool)
+            for (fi, ti) in S:
+                mask[ti, fi] = True
+            mask_S = mask.clone()
+            mask_Si = mask.clone()
+            mask_Si[t, f] = True
+            x_S = baseline.clone()
+            x_S[mask_S] = tensor_true_test_in.cpu()[mask_S]
+            x_Si = baseline.clone()
+            x_Si[mask_Si] = tensor_true_test_in.cpu()[mask_Si]
+            perturbed_inputs_S.append(x_S)
+            perturbed_inputs_Si.append(x_Si)
+        batch_S = torch.stack(perturbed_inputs_S)
+        batch_Si = torch.stack(perturbed_inputs_Si)
+        with torch.no_grad():
+            n_layers = best_model.num_layers
+            batch_size = batch_S.size(0)
+            best_model.hidden = (
+                torch.zeros(n_layers, batch_size, best_model.hidden_layer_size).to(batch_S.device),
+                torch.zeros(n_layers, batch_size, best_model.hidden_layer_size).to(batch_S.device)
+            )
+            out_S = best_model(batch_S)
+            best_model.hidden = (
+                torch.zeros(n_layers, batch_size, best_model.hidden_layer_size).to(batch_Si.device),
+                torch.zeros(n_layers, batch_size, best_model.hidden_layer_size).to(batch_Si.device)
+            )
+            out_Si = best_model(batch_Si)
+        v_S = out_S[:, :].cpu().numpy()
+        v_Si = out_Si[:, :].cpu().numpy()
+        contribs = np.mean(v_Si - v_S, axis=0)  # mean over batch, per output species
+        # For the heatmap, aggregate as in original code (mean over output species)
+        return np.mean(contribs)
+
+    timesteps, features = tensor_true_test_in.cpu().shape
+    results = Parallel(n_jobs=4)(
+        delayed(compute_shapley_for_species_timepoint)(f, t, n_samples=100, seed=42)
+        for f in range(features) for t in range(timesteps)
     )
+    shapley_matrix = np.array(results).reshape((features, timesteps))
     plt.figure(figsize=(14, 8))
     sns.heatmap(shapley_matrix, xticklabels=[f'T{t+1}' for t in range(shapley_matrix.shape[1])], yticklabels=blastT_labels, center=0, cmap='coolwarm', annot=False)
     plt.xlabel('Timepoint')

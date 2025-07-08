@@ -39,11 +39,11 @@ def ablate_feature_compositional(x, feature_idx, baseline_value):
         x_new[feature_idx] = baseline_value
         return x_new
     scale = (1 - baseline_value) / other_sum
-    for j in range(len(x)):
-        if j == feature_idx:
-            x_new[j] = baseline_value
-        else:
-            x_new[j] = x[j] * scale
+    # Vectorized: mask for all features except the ablated one
+    mask = torch.ones_like(x, dtype=torch.bool)
+    mask[feature_idx] = False
+    x_new[mask] = x[mask] * scale
+    x_new[feature_idx] = baseline_value
     return x_new
 
 
