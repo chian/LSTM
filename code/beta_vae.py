@@ -5,30 +5,30 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class BetaVAE(nn.Module):
-    def __init__(self, input_dim, latent_dim=8, beta=4.0, hidden_dim=64):
-        super(BetaVAE, self).__init__()
-        self.input_dim = input_dim
-        self.latent_dim = latent_dim
-        self.beta = beta
-        self.hidden_dim = hidden_dim
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
-        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, input_dim),
-            nn.Sigmoid(),  # For normalized/relative abundance data
-        )
+    def __init__(self, input_dim, latent_dim=8, beta=4.0, hidden_dim=64, num_layers=2):
+        super(BetaVAE, self).__init__(); self.input_dim = input_dim; self.latent_dim = latent_dim; self.beta = beta; self.hidden_dim = hidden_dim; self.num_layers = num_layers
+        # Automated shrinking for encoder
+        encoder_layers = []
+        prev_dim = input_dim
+        for i in range(num_layers):
+            next_dim = int(hidden_dim * ((latent_dim / hidden_dim) ** (i / (num_layers - 1)))) if num_layers > 1 else hidden_dim
+            encoder_layers.append(nn.Linear(prev_dim, next_dim))
+            encoder_layers.append(nn.ReLU())
+            prev_dim = next_dim
+        self.encoder = nn.Sequential(*encoder_layers)
+        self.fc_mu = nn.Linear(prev_dim, latent_dim)
+        self.fc_logvar = nn.Linear(prev_dim, latent_dim)
+        # Automated expanding for decoder
+        decoder_layers = []
+        prev_dim = latent_dim
+        for i in range(num_layers):
+            next_dim = int(hidden_dim * ((input_dim / hidden_dim) ** (i / (num_layers - 1)))) if num_layers > 1 else hidden_dim
+            decoder_layers.append(nn.Linear(prev_dim, next_dim))
+            decoder_layers.append(nn.ReLU())
+            prev_dim = next_dim
+        decoder_layers.append(nn.Linear(prev_dim, input_dim))
+        decoder_layers.append(nn.Sigmoid())
+        self.decoder = nn.Sequential(*decoder_layers)
 
     def encode(self, x):
         h = self.encoder(x)
@@ -139,9 +139,17 @@ def train_beta_vae(model, dataloader, optimizer, device, epochs=100, anneal_epoc
         anneal_epochs: int, number of epochs to linearly ramp beta from 0 to model.beta
         tc_interval: int, how often (in epochs) to print total correlation
         val_tensor: torch.Tensor or None, shape (n_val_samples, input_dim)
+    Returns:
+        model: trained BetaVAE
+        tc_history: list of (epoch, TC) tuples
+        best_tc: float (lowest TC)
+        best_epoch: int (epoch with lowest TC)
     """
     model.train()
     base_beta = model.beta  # Save configured beta
+    tc_history = []
+    best_tc = float('inf')
+    best_epoch = -1
     for epoch in range(epochs):
         # Monotonic linear annealing schedule
         if anneal_epochs > 0:
@@ -171,6 +179,10 @@ def train_beta_vae(model, dataloader, optimizer, device, epochs=100, anneal_epoc
                     all_mu.append(mu.cpu())
             all_mu = torch.cat(all_mu, dim=0)
             tc = total_correlation_metric(all_mu)
+            tc_history.append((epoch+1, tc))
+            if tc < best_tc:
+                best_tc = tc
+                best_epoch = epoch+1
             val_str = ""
             if val_tensor is not None:
                 with torch.no_grad():
@@ -189,7 +201,7 @@ def train_beta_vae(model, dataloader, optimizer, device, epochs=100, anneal_epoc
             print(f"Epoch {epoch+1}: Loss={total_loss:.2f} Recon={total_recon:.2f} KLD={total_kld:.2f} Beta={model.beta:.4f}")
     # Restore model.beta to base_beta after training
     model.beta = base_beta
-    return model
+    return model, tc_history, best_tc, best_epoch
 
 # Placeholder for disentanglement metrics (to be implemented as needed)
 def compute_mig(latent_codes, factors):

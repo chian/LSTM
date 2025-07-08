@@ -225,12 +225,26 @@ def decode_and_plot_lstm_predictions(beta_vae, lstm_model, X, true_profiles, dev
     return decoded_preds, mse 
 
 
-if __name__ == "__main__":
+def run_beta_vae_experiment(
+    latent_dim=8,
+    beta=4.0,
+    input_dim=15,
+    hidden_dim=64,
+    num_layers=1,
+    batch_size=64,
+    num_epochs=100,
+    anneal_epochs=20,
+    lr=1e-5,
+    testing_traj_ind=0,
+    save_path=None
+):
     import pickle
     from beta_vae import BetaVAE, train_beta_vae
     import os
     from beta_vae import total_correlation_metric, latent_traversal_plot
     import data_parsing
+    from torch.utils.data import DataLoader, TensorDataset
+    import torch
 
     # 1. Load all training and testing sequences
     data_path = os.path.join('data', 'train_test_sequences.pickle')
@@ -238,9 +252,9 @@ if __name__ == "__main__":
         all_training_sequences, all_testing_sequences = pickle.load(f)
 
     # 2. Use data_parsing.setup_testing to split into train/val
-    testing_traj_ind = 0  # or any valid index for your validation trajectory
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     trainingData, test_in, tensor_true_test_in, tensor_true_test_data = data_parsing.setup_testing(
-        all_training_sequences, all_testing_sequences, testing_traj_ind, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        all_training_sequences, all_testing_sequences, testing_traj_ind, device=device)
 
     # 3. Prepare training DataLoader (flatten to single timepoints for VAE)
     train_profiles = trainingData.tensors[0].reshape(-1, input_dim).float()
@@ -251,16 +265,58 @@ if __name__ == "__main__":
     val_tensor = tensor_true_test_in.reshape(-1, input_dim).float()
 
     # 5. Instantiate BetaVAE
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    vae = BetaVAE(input_dim=input_dim, latent_dim=latent_dim, beta=beta).to(device)
+    vae = BetaVAE(input_dim=input_dim, latent_dim=latent_dim, beta=beta, hidden_dim=hidden_dim, num_layers=num_layers).to(device)
 
     # 6. Optimizer
     optimizer = torch.optim.Adam(vae.parameters(), lr=lr)
 
     # 7. Train BetaVAE with validation
-    train_beta_vae(vae, dataloader, optimizer, device, epochs=num_epochs, anneal_epochs=anneal_epochs, tc_interval=10, val_tensor=val_tensor)
+    vae, tc_history, best_tc, best_epoch = train_beta_vae(vae, dataloader, optimizer, device, epochs=num_epochs, anneal_epochs=anneal_epochs, tc_interval=10, val_tensor=val_tensor)
 
-    # 8. Save trained model
-    save_path = 'beta_vae_trained.pth'
-    save_beta_vae(vae, save_path)
-    print(f"Trained BetaVAE saved to {save_path}") 
+    # 8. Do not save trained model in evaluation mode
+    return vae, tc_history, best_tc, best_epoch
+
+if __name__ == "__main__":
+    from itertools import product
+    # Define hyperparameter grid
+    latent_dims = [4, 5, 6, 7, 8, 9, 10, 11, 12]
+    betas = [1.0, 4.0, 10.0]
+    hidden_dims = [16, 32, 64]
+    num_layers_list = [1, 2, 3, 4]
+    lrs = [1e-4, 1e-5, 1e-6]
+    batch_sizes = [32, 64]
+    num_epochs = 50
+    anneal_epochs = 10
+    input_dim = 15
+    results = []
+    for latent_dim, beta, hidden_dim, num_layers, lr, batch_size in product(latent_dims, betas, hidden_dims, num_layers_list, lrs, batch_sizes):
+        print(f"\n=== Running BetaVAE: latent_dim={latent_dim}, beta={beta}, hidden_dim={hidden_dim}, num_layers={num_layers}, lr={lr}, batch_size={batch_size} ===")
+        vae, tc_history, best_tc, best_epoch = run_beta_vae_experiment(
+            latent_dim=latent_dim,
+            beta=beta,
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            batch_size=batch_size,
+            num_epochs=num_epochs,
+            anneal_epochs=anneal_epochs,
+            lr=lr,
+            save_path=None
+        )
+        print(f"Best TC for this run: {best_tc:.4f} at epoch {best_epoch}")
+        results.append({
+            'latent_dim': latent_dim,
+            'beta': beta,
+            'hidden_dim': hidden_dim,
+            'num_layers': num_layers,
+            'lr': lr,
+            'batch_size': batch_size,
+            'tc': best_tc,
+            'best_epoch': best_epoch,
+            'tc_history': tc_history
+        })
+    print("\nAll runs complete. Results (sorted by best TC):")
+    for r in sorted(results, key=lambda x: x['tc']):
+        print(r)
+    best_result = min(results, key=lambda x: x['tc'])
+    print(f"\nBest overall: TC={best_result['tc']:.4f} at epoch {best_result['best_epoch']} with hyperparameters: {best_result}") 
