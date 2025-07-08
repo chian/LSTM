@@ -18,6 +18,7 @@ import lstm_funcs
 import msda
 import shapley_attribution
 import seaborn as sns
+from shapley_attribution import compositional_mean_baseline, ablate_feature_compositional
 
 # This is just the main script if you want to run the model one-off or something
 # 
@@ -97,13 +98,28 @@ for z in range(ensemble_size):
     lstm_funcs.plot_best_fit(full_test_data, best_prediction, pred_color, base_data_color, best_fit_idx, blastT_labels, False, None, full_test_data, run_number=z+1)
 
     # --- SHAPLEY ATTRIBUTION ---
-    baseline = torch.zeros_like(tensor_true_test_in.cpu())
+    # Baseline for timepoint attribution: compositional mean
+    baseline = compositional_mean_baseline(tensor_true_test_in.cpu())
+
+    # Perturb function for feature ablation: ablate each feature at all timepoints
+    def feature_ablation_perturb(input_seq, ablated_features):
+        # input_seq: (timesteps, features)
+        # ablated_features: tuple of feature indices to ablate
+        ablated_seq = input_seq.clone()
+        # Use compositional mean as baseline for each feature
+        mean_vec = compositional_mean_baseline(input_seq)[0]
+        for t in range(input_seq.shape[0]):
+            for f in ablated_features:
+                ablated_seq[t] = ablate_feature_compositional(ablated_seq[t], f, mean_vec[f])
+        return ablated_seq
+
     shapley_matrix = np.zeros((len(blastT_labels), len(blastT_labels)))
     self_effects = np.zeros(len(blastT_labels))
     max_neighbor_effects = np.zeros(len(blastT_labels))
     for target_idx, species_name in enumerate(blastT_labels):
         self_effect, neighbor_effects, max_neighbor_effect = shapley_attribution.shapley_feature_attribution(
-            best_model, tensor_true_test_in.cpu(), baseline, target_idx=target_idx, device=device
+            best_model, tensor_true_test_in.cpu(), baseline, target_idx=target_idx, device=device,
+            perturb_func=feature_ablation_perturb
         )
         print(f'--- Shapley attribution for {species_name} ---')
         print(f'Self-effect (own history): {self_effect:.4f}')
@@ -151,6 +167,7 @@ if ensemble_shapley_matrices:
     # --- SPECIES-TIMEPOINT SHAPLEY HEATMAP ---
     print('\nComputing approximate Shapley values for all (species, timepoint) pairs...')
     # Use the best model and first test input for demonstration
+    # For timepoint ablation, baseline is compositional mean
     shapley_matrix = shapley_attribution.shapley_species_timepoint_matrix(
         best_model, tensor_true_test_in.cpu(), baseline, device=device, n_samples=100, seed=42
     )

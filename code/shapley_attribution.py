@@ -3,6 +3,49 @@ import torch
 from itertools import combinations
 import random
 
+# Utility: compositional mean across timepoints (for baseline sequence)
+def compositional_mean_baseline(input_seq):
+    """
+    Compute the compositional mean across timepoints for a sequence.
+    Args:
+        input_seq: torch.Tensor, shape (timesteps, features), each row sums to 1
+    Returns:
+        baseline: torch.Tensor, shape (timesteps, features), each row is the compositional mean
+    """
+    # Compute mean in the simplex (compositional mean)
+    # Geometric mean, then renormalize
+    log_x = torch.log(input_seq + 1e-12)  # avoid log(0)
+    mean_log = log_x.mean(dim=0)
+    gmean = torch.exp(mean_log)
+    gmean = gmean / gmean.sum()  # renormalize to sum to 1
+    baseline = gmean.unsqueeze(0).repeat(input_seq.shape[0], 1)
+    return baseline
+
+# Utility: ablate a feature with renormalization for compositional data
+def ablate_feature_compositional(x, feature_idx, baseline_value):
+    """
+    Ablate a single feature in a compositional vector, renormalizing the rest.
+    Args:
+        x: torch.Tensor, shape (features,), sums to 1
+        feature_idx: int, index to ablate
+        baseline_value: float, value to set for ablated feature
+    Returns:
+        x_new: torch.Tensor, shape (features,), sums to 1
+    """
+    x_new = x.clone()
+    other_sum = x.sum() - x[feature_idx]
+    if other_sum < 1e-8:
+        # All mass is in feature_idx, just set to baseline
+        x_new[feature_idx] = baseline_value
+        return x_new
+    scale = (1 - baseline_value) / other_sum
+    for j in range(len(x)):
+        if j == feature_idx:
+            x_new[j] = baseline_value
+        else:
+            x_new[j] = x[j] * scale
+    return x_new
+
 
 def shapley_feature_attribution(model, input_seq, baseline, target_idx, device=None, perturb_func=None):
     """
