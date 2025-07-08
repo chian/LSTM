@@ -19,6 +19,7 @@ import msda
 import shapley_attribution
 import seaborn as sns
 from shapley_attribution import compositional_mean_baseline, ablate_feature_compositional
+from matplotlib.backends.backend_pdf import PdfPages
 
 # This is just the main script if you want to run the model one-off or something
 # 
@@ -141,8 +142,8 @@ for z in range(ensemble_size):
     plt.ylabel('Target Species')
     plt.title(f'Shapley Attribution Heatmap (Neighbor Effects) - Run {z+1}')
     plt.tight_layout()
-    plt.show(block=False)
-    plt.pause(0.1)
+    # plt.show(block=False)
+    # plt.pause(0.1)
 
 # --- AVERAGE ACROSS ENSEMBLES ---
 if ensemble_shapley_matrices:
@@ -155,8 +156,8 @@ if ensemble_shapley_matrices:
     plt.ylabel('Target Species')
     plt.title('Average Shapley Attribution Heatmap (Neighbor Effects) - All Runs')
     plt.tight_layout()
-    plt.show(block=False)
-    plt.pause(0.1)
+    # plt.show(block=False)
+    # plt.pause(0.1)
     print('\n=== Average Self-effect (own history) across all runs ===')
     for idx, val in enumerate(avg_self_effects):
         print(f'{blastT_labels[idx]}: {val:.4f}')
@@ -177,8 +178,8 @@ if ensemble_shapley_matrices:
     plt.ylabel('Species')
     plt.title('Shapley Attribution Heatmap (Species × Timepoint)')
     plt.tight_layout()
-    plt.show(block=False)
-    plt.pause(0.1)
+    # plt.show(block=False)
+    # plt.pause(0.1)
     # Marginal sums/averages
     species_marginal = shapley_matrix.mean(axis=1)
     timepoint_marginal = shapley_matrix.mean(axis=0)
@@ -188,15 +189,77 @@ if ensemble_shapley_matrices:
     plt.title('Mean Shapley Attribution per Species (Averaged over Timepoints)')
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-    plt.show(block=False)
-    plt.pause(0.1)
+    # plt.show(block=False)
+    # plt.pause(0.1)
     plt.figure(figsize=(10, 4))
     plt.bar([f'T{t+1}' for t in range(shapley_matrix.shape[1])], timepoint_marginal)
     plt.ylabel('Mean Shapley Value')
     plt.title('Mean Shapley Attribution per Timepoint (Averaged over Species)')
     plt.tight_layout()
-    plt.show(block=False)
-    plt.pause(0.1)
+    # plt.show(block=False)
+    # plt.pause(0.1)
 
-plt.ioff()
-plt.show()
+# === PDF OUTPUT FOR ALL PLOTS ===
+with PdfPages('shapley_results.pdf') as pdf:
+    # --- PREDICTION PLOT ---
+    base_data_color = ['black', 'red', 'orange', 'green', 'blue', 'gold', 'purple', 'pink', 'grey', 'turquoise', 'cyan', 'crimson', 'indigo', 'olive', 'saddlebrown']
+    pred_color = base_data_color
+    best_fit_idx = list(range(4))
+    full_test_data = torch.cat((torch.clone(tensor_true_test_in),torch.clone(tensor_true_test_data)))
+    lstm_funcs.plot_best_fit(full_test_data, best_prediction, pred_color, base_data_color, best_fit_idx, blastT_labels, False, None, full_test_data, run_number=z+1)
+    pdf.savefig()  # Save prediction plot
+    plt.close()
+
+    # --- SHAPLEY ATTRIBUTION HEATMAP ---
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(shapley_matrix, xticklabels=blastT_labels, yticklabels=blastT_labels, center=0, cmap='coolwarm', annot=True, fmt=".2f")
+    plt.xlabel('Neighbor Species')
+    plt.ylabel('Target Species')
+    plt.title(f'Shapley Attribution Heatmap (Neighbor Effects) - Run {z+1}')
+    plt.tight_layout()
+    pdf.savefig()
+    plt.close()
+
+    # --- AVERAGE ACROSS ENSEMBLES ---
+    if ensemble_shapley_matrices:
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(avg_shapley_matrix, xticklabels=blastT_labels, yticklabels=blastT_labels, center=0, cmap='coolwarm', annot=True, fmt=".2f")
+        plt.xlabel('Neighbor Species')
+        plt.ylabel('Target Species')
+        plt.title('Average Shapley Attribution Heatmap (Neighbor Effects) - All Runs')
+        plt.tight_layout()
+        pdf.savefig()
+        plt.close()
+
+        # --- SPECIES-TIMEPOINT SHAPLEY HEATMAP ---
+        plt.figure(figsize=(14, 8))
+        sns.heatmap(shapley_matrix, xticklabels=[f'T{t+1}' for t in range(shapley_matrix.shape[1])], yticklabels=blastT_labels, center=0, cmap='coolwarm', annot=False)
+        plt.xlabel('Timepoint')
+        plt.ylabel('Species')
+        plt.title('Shapley Attribution Heatmap (Species × Timepoint)')
+        plt.tight_layout()
+        pdf.savefig()
+        plt.close()
+
+        # Marginal sums/averages
+        plt.figure(figsize=(10, 4))
+        plt.bar(blastT_labels, species_marginal)
+        plt.ylabel('Mean Shapley Value')
+        plt.title('Mean Shapley Attribution per Species (Averaged over Timepoints)')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        pdf.savefig()
+        plt.close()
+
+        plt.figure(figsize=(10, 4))
+        plt.bar([f'T{t+1}' for t in range(shapley_matrix.shape[1])], timepoint_marginal)
+        plt.ylabel('Mean Shapley Value')
+        plt.title('Mean Shapley Attribution per Timepoint (Averaged over Species)')
+        plt.tight_layout()
+        pdf.savefig()
+        plt.close()
+
+# Comment out interactive plot display
+# plt.ioff()
+# plt.show()
+# plt.pause(0.1)
